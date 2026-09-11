@@ -1,6 +1,11 @@
 const RAINBOW_DURATION_MS = 10000;
 const SPIN_DURATION_MS = 900;
 const FACE_SCALE = 0.065;
+const AUDIO_SOURCE = './assets/yippeeeeeeeeeeeeee.mp3';
+const IDLE_RESET_MS = 10000;
+const STABLE_SHAKE_FREQUENCY = 3;
+const MAX_SHAKE_FREQUENCY = 22;
+const FAST_CLICK_WINDOW_MS = 1200;
 
 function getRainbowHue(timeMs) {
   const progress = (timeMs % RAINBOW_DURATION_MS) / RAINBOW_DURATION_MS;
@@ -35,9 +40,9 @@ function drawBackground(ctx, width, height) {
   ctx.fillRect(0, 0, width, height);
 }
 
-function drawSmileyFace(ctx, centerX, centerY, size, color, pulse, rotation) {
+function drawSmileyFace(ctx, centerX, centerY, size, color, pulse, rotation, shake) {
   ctx.save();
-  ctx.translate(centerX, centerY);
+  ctx.translate(centerX + shake.x, centerY + shake.y);
   ctx.rotate(rotation);
 
   const glowRadius = size * 1.8;
@@ -106,21 +111,94 @@ function drawSmileyFace(ctx, centerX, centerY, size, color, pulse, rotation) {
 }
 
 export function animate(scene) {
-  const { ctx, width, height } = scene;
+  const { canvas, ctx, width, height } = scene;
+  const state = {
+    x: width() / 2,
+    y: height() / 2,
+    renderedX: width() / 2,
+    renderedY: height() / 2,
+    tilt: 0,
+    hasBeenClicked: false,
+    lastClickAt: 0,
+    shakeFrequency: STABLE_SHAKE_FREQUENCY,
+    targetShakeFrequency: STABLE_SHAKE_FREQUENCY,
+    previousFrameAt: 0,
+  };
+  const activeSounds = new Set();
+
+  function size() {
+    return Math.min(width(), height()) * FACE_SCALE;
+  }
+
+  function randomCoordinate(length, padding) {
+    if (length <= padding * 2) {
+      return length / 2;
+    }
+
+    return padding + Math.random() * (length - padding * 2);
+  }
+
+  function playClickSound() {
+    const sound = new Audio(AUDIO_SOURCE);
+    activeSounds.add(sound);
+    sound.addEventListener('ended', () => activeSounds.delete(sound), { once: true });
+    sound.play().catch(() => activeSounds.delete(sound));
+  }
+
+  function handleClick(event) {
+    const bounds = canvas.getBoundingClientRect();
+    const clickX = event.clientX - bounds.left;
+    const clickY = event.clientY - bounds.top;
+    const faceSize = size();
+
+    if (Math.hypot(clickX - state.renderedX, clickY - state.renderedY) > faceSize) {
+      return;
+    }
+
+    const now = performance.now();
+    const clickInterval = state.lastClickAt ? now - state.lastClickAt : IDLE_RESET_MS;
+    const clickSpeed = Math.max(0, Math.min(1, 1 - clickInterval / FAST_CLICK_WINDOW_MS));
+
+    state.hasBeenClicked = true;
+    state.lastClickAt = now;
+    state.targetShakeFrequency = STABLE_SHAKE_FREQUENCY
+      + (MAX_SHAKE_FREQUENCY - STABLE_SHAKE_FREQUENCY) * clickSpeed;
+    state.x = randomCoordinate(width(), faceSize * 1.8);
+    state.y = randomCoordinate(height(), faceSize * 1.8);
+    state.tilt = Math.random() * Math.PI * 2;
+
+    playClickSound();
+  }
+
+  canvas.addEventListener('click', handleClick);
 
   function frame(now) {
     const w = width();
     const h = height();
-    const centerX = w / 2;
-    const centerY = h / 2;
-    const size = Math.min(w, h) * FACE_SCALE;
+    const faceSize = Math.min(w, h) * FACE_SCALE;
+    const elapsedSinceClick = now - state.lastClickAt;
+    const delta = state.previousFrameAt ? now - state.previousFrameAt : 0;
     const pulse = 0.75 + 0.25 * Math.sin((now / 700) * Math.PI);
     const color = { hue: getRainbowHue(now) };
-    const rotation = (now % SPIN_DURATION_MS) / SPIN_DURATION_MS * Math.PI * 2;
+    const rotation = state.tilt + (now % SPIN_DURATION_MS) / SPIN_DURATION_MS * Math.PI * 2;
+    const settleTarget = elapsedSinceClick >= IDLE_RESET_MS
+      ? STABLE_SHAKE_FREQUENCY
+      : state.targetShakeFrequency;
+    const settleProgress = 1 - Math.exp(-delta / 180);
+    const shakeFrequency = state.shakeFrequency += (settleTarget - state.shakeFrequency) * settleProgress;
+    const shakeMagnitude = state.hasBeenClicked ? faceSize * 0.12 : 0;
+    const shakePhase = now / 1000 * shakeFrequency * Math.PI * 2;
+    const shake = {
+      x: Math.sin(shakePhase) * shakeMagnitude,
+      y: Math.sin(shakePhase * 1.37) * shakeMagnitude * 0.65,
+    };
 
     drawBackground(ctx, w, h);
-    drawSmileyFace(ctx, centerX, centerY, size, color, pulse, rotation);
+    drawSmileyFace(ctx, state.x, state.y, faceSize, color, pulse, rotation, shake);
 
+    state.renderedX = state.x + shake.x;
+    state.renderedY = state.y + shake.y;
+    state.previousFrameAt = now;
     requestAnimationFrame(frame);
   }
 
